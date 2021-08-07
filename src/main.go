@@ -17,17 +17,76 @@ const (
 	EULER
 	HEUN
 )
-const FPS float64 = 30
+const FPS float64 = 120
 
 var (
-	width  = 1500
+	width  = 500
 	height = 500
 	xmax   = 10.0
 	xmin   = 0.0
 	ymax   = 0.0
-	ymin   = 20.0
+	ymin   = 10.0
 )
 var t float64 = 0.0
+
+type Trigger struct {
+	x1     [2]float64
+	x2     [2]float64
+	color  color.RGBA
+	ID     int
+	normal [2]float64
+	length float64
+	dx     float64
+	dy     float64
+	width  float64
+}
+
+func newTrigger(x1 [2]float64, x2 [2]float64) *Trigger {
+	color := color.RGBA{R: 0, G: 255, B: 0, A: 255}
+	dx := x2[0] - x1[0]
+	dy := x2[1] - x1[1]
+	leng := math.Sqrt(dx*dx + dy*dy)
+	normal := [2]float64{-dy / leng, dx / leng}
+	return &Trigger{x1: x1, x2: x2, color: color, ID: len(triggers), normal: normal, length: leng, dx: dx, dy: dy, width: 5}
+}
+
+func (trigger *Trigger) display() {
+	draw_line(trigger.x1[0], trigger.x1[1], trigger.x2[0], trigger.x2[1], trigger.color, trigger.width)
+}
+
+func (trigger *Trigger) update() {
+	trigger.display()
+}
+
+type Wall struct {
+	x1     [2]float64
+	x2     [2]float64
+	color  color.RGBA
+	ID     int
+	normal [2]float64
+	length float64
+	dx     float64
+	dy     float64
+	width  float64
+}
+
+func newWall(x1 [2]float64, x2 [2]float64) *Wall {
+	color := color.RGBA{R: 0, G: 0, B: 255, A: 255}
+	dx := x2[0] - x1[0]
+	dy := x2[1] - x1[1]
+	leng := math.Sqrt(dx*dx + dy*dy)
+	normal := [2]float64{-dy / leng, dx / leng}
+	return &Wall{x1: x1, x2: x2, color: color, ID: len(walls), normal: normal, length: leng, dx: dx, dy: dy, width: 10}
+}
+
+func (wall *Wall) display() {
+	draw_line(wall.x1[0], wall.x1[1], wall.x2[0], wall.x2[1], wall.color, wall.width)
+	// draw_line(wall.x1[0]+wall.dx/2, wall.x1[1]+wall.dy/2, wall.x1[0]+wall.dx/2+wall.normal[0], wall.x1[1]+wall.dy/2+wall.normal[1], wall.color, 0.5)
+}
+
+func (wall *Wall) update() {
+	wall.display()
+}
 
 type Object2D struct {
 	x          [2]float64
@@ -35,18 +94,20 @@ type Object2D struct {
 	a          [2]float64
 	mass       float64
 	ID         int
-	forces     [](func(*Object2D, float64) [2]float64)
+	forces     [](func(*Object2D, []*Object2D, float64) [2]float64)
 	integrator int
 	color      color.RGBA
+	r          float64
+	v0         [2]float64
 }
 
 func newObject(x [2]float64, v [2]float64, a [2]float64, mass float64, integrator int) *Object2D {
-	forces := [](func(*Object2D, float64) [2]float64){}
+	forces := [](func(*Object2D, []*Object2D, float64) [2]float64){}
 	color := color.RGBA{R: 255, G: 255, B: 255, A: 255}
-	return &Object2D{x: x, v: v, a: a, ID: len(objects), forces: forces, mass: mass, integrator: integrator, color: color}
+	return &Object2D{x: x, v: v, a: a, ID: len(objects), forces: forces, mass: mass, integrator: integrator, color: color, r: mass / 10, v0: v}
 }
 
-func (object *Object2D) addForce(force func(*Object2D, float64) [2]float64) {
+func (object *Object2D) addForce(force func(*Object2D, []*Object2D, float64) [2]float64) {
 	object.forces = append(object.forces, force)
 }
 
@@ -60,7 +121,7 @@ func (object *Object2D) move() {
 	sumfxt1 := 0.0
 	sumfyt1 := 0.0
 	for _, force := range object.forces {
-		result_forces := force(object, t)
+		result_forces := force(object, objects, t)
 		sumfx += result_forces[0]
 		sumfy += result_forces[1]
 	}
@@ -81,7 +142,7 @@ func (object *Object2D) move() {
 		euler_object.x[1] = euler_object.x[1] + euler_object.v[1]*dt
 
 		for _, force := range object.forces {
-			result_forces := force(euler_object, t+dt)
+			result_forces := force(euler_object, objects, t+dt)
 			sumfxt1 += result_forces[0]
 			sumfyt1 += result_forces[1]
 		}
@@ -106,11 +167,46 @@ func (object *Object2D) move() {
 	}
 
 }
+
+func (object *Object2D) collide(walls []*Wall) {
+	for _, wall := range walls {
+		d, dx := point_to_line_distance(object.x[0], object.x[1], wall.x1[0], wall.x1[1], wall.x2[0], wall.x2[1])
+		if d <= object.r {
+			fact := 2 * (object.v[0]*dx[0]/d + object.v[1]*dx[1]/d)
+			r := [2]float64{object.v[0] - fact*dx[0]/d, object.v[1] - fact*dx[1]/d}
+			object.v = r
+		}
+
+	}
+}
+
+func (object *Object2D) collide_triggers(walls []*Trigger) {
+	for _, wall := range walls {
+		d, _ := point_to_line_distance(object.x[0], object.x[1], wall.x1[0], wall.x1[1], wall.x2[0], wall.x2[1])
+		if d <= object.r {
+			object.color = color.RGBA{R: 0, G: 255, B: 0, A: 255}
+			object.v = [2]float64{0.0, 0.0}
+			object.a = [2]float64{0.0, 0.0}
+			object.forces = [](func(*Object2D, []*Object2D, float64) [2]float64){}
+			yes = append(yes, object.v0)
+		}
+
+	}
+}
+
 func (object *Object2D) display() {
+	p5.StrokeWidth(0)
 	p5.Fill(object.color)
-	draw_ellipse(object.x[0], object.x[1], 0.03)
+	draw_ellipse(object.x[0], object.x[1], object.mass/10)
+	// for _, wall := range walls {
+	// d, dx := point_to_line_distance(object.x[0], object.x[1], wall.x1[0], wall.x1[1], wall.x2[0], wall.x2[1])
+	// draw_line(object.x[0], object.x[1], object.x[0]+dx[0], object.x[1]+dx[1], wall.color, 0.5)
+	// draw_text(object.x[0]+dx[0]*0.5, object.x[1]+dx[1]*0.5, 10, "d="+fmt.Sprintf("%.3f", d))
+	// }
 }
 func (object *Object2D) update() {
+	object.collide(walls)
+	object.collide_triggers(triggers)
 	object.move()
 	object.display()
 	// object.print_details()
@@ -126,8 +222,47 @@ func draw_text(x float64, y float64, size float64, text string) {
 	p5.Text(text, x, y)
 }
 
+func draw_line(x1 float64, y1 float64, x2 float64, y2 float64, color color.RGBA, width float64) {
+	p5.Fill(color)
+	p5.StrokeWidth(width)
+	p5.Line(x1, y1, x2, y2)
+}
+
+func point_to_line_distance(x float64, y float64, x1 float64, y1 float64, x2 float64, y2 float64) (float64, []float64) {
+
+	A := x - x1
+	B := y - y1
+	C := x2 - x1
+	D := y2 - y1
+
+	dot := A*C + B*D
+	len_sq := C*C + D*D
+	param := -1.0
+	if len_sq != 0 {
+		param = dot / len_sq
+	}
+	var xx, yy float64
+
+	if param < 0 {
+		xx = x1
+		yy = y1
+	} else if param > 1 {
+		xx = x2
+		yy = y2
+	} else {
+		xx = x1 + param*C
+		yy = y1 + param*D
+	}
+
+	dx := x - xx
+	dy := y - yy
+	return math.Sqrt(dx*dx + dy*dy), []float64{-dx, -dy}
+}
+
 var dt float64 = 0.0
 var objects []*Object2D
+var walls []*Wall
+var triggers []*Trigger
 
 func frameUpdate() {
 	frame_start_time := time.Now()
@@ -144,19 +279,70 @@ func frameUpdate() {
 
 func update() {
 	draw_text(0.5, 0.5, 15, "t="+fmt.Sprintf("%.3f", t))
+	for _, wall := range walls {
+		// wg.Add(1)
+		wall.update()
+	}
+
+	for _, trigger := range triggers {
+		// wg.Add(1)
+		trigger.update()
+	}
 	for _, object := range objects {
 		// wg.Add(1)
 		object.update()
 	}
+	// for _, v := range yes {
+	// 	fmt.Printf("%.3f,%.3f\n",v[0],v[1])
+	// }
+	// println("----------------")
 	// wg.Wait()
 }
+
+func square_Wall(x0 float64, y0 float64, x1 float64, y1 float64) {
+	wall := newWall([2]float64{x0, y0}, [2]float64{x1, y0})
+	wall.width = 2
+	walls = append(walls, wall)
+
+	wall = newWall([2]float64{x1, y0}, [2]float64{x1, y1})
+	wall.width = 2
+	walls = append(walls, wall)
+
+	wall = newWall([2]float64{x1, y1}, [2]float64{x0, y1})
+	wall.width = 2
+	walls = append(walls, wall)
+
+	wall = newWall([2]float64{x0, y1}, [2]float64{x0, y0})
+	wall.width = 2
+	walls = append(walls, wall)
+}
+
+var yes []([2]float64)
+
 func setup() {
-	n := 100
+	wall := newWall([2]float64{xmin, ymax}, [2]float64{xmax, ymax})
+	walls = append(walls, wall)
+
+	wall = newWall([2]float64{xmax * 0.75, ymin * 0.45}, [2]float64{xmax * 0.75, ymin * 0.65})
+	wall.width = 2
+	walls = append(walls, wall)
+
+	square_Wall(xmax*0.75-0.05, ymin*0.45, xmax*0.75, ymin*0.45+0.25)
+	square_Wall(xmax*0.75-0.85, ymin*0.45, xmax*0.75-0.8, ymin*0.45+0.25)
+
+	trigger := newTrigger([2]float64{xmax * 0.75, ymin*0.45 + 0.25/2}, [2]float64{xmax*0.75 - 0.85, ymin*0.45 + 0.25/2})
+	triggers = append(triggers, trigger)
+
+	n := 40
 	for i := 0; i < n; i++ {
-		object := newObject([2]float64{1.2, 5}, [2]float64{5.0, 10.0 * (float64(i) / float64(n))}, [2]float64{0.0, 0.0}, 1.0, HEUN)
-		object.addForce(func(object *Object2D, t float64) [2]float64 { return [2]float64{0.0, -9.81 * object.mass} })
-		objects = append(objects, object)
-		object.color = color.RGBA{R: 255, G: 0, B: 0, A: 255}
+		for j := 0; j < n; j++ {
+			object := newObject([2]float64{1.2, 5}, [2]float64{10.0 * (float64(j) / float64(n)), 10.0 * (float64(i) / float64(n))}, [2]float64{0.0, 0.0}, 1.0, HEUN)
+			object.addForce(func(object *Object2D, objects []*Object2D, t float64) [2]float64 {
+				return [2]float64{0.0, -9.81 * object.mass}
+			})
+			objects = append(objects, object)
+			object.color = color.RGBA{R: 255, G: 0, B: 0, A: 255}
+		}
 	}
 
 	p5.Canvas(width, height)
